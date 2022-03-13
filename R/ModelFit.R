@@ -889,7 +889,8 @@ getCyclopsProfileLogLikelihood <- function(object,
             slopes <- c(slopes[1] + (slopes[2] - slopes[3]),
                         slopes,
                         slopes[length(slopes)] - (slopes[length(slopes) - 1] - slopes[length(slopes)]))
-
+            # compute the x-axis intersection point of the (i-1)-linear interpolation
+            #                                         & the (i+1)-linear interpolation
             interceptX <- (profile$value[2:nrow(profile)] -
                                profile$point[2:nrow(profile)] * slopes[3:length(slopes)] -
                                profile$value[1:(nrow(profile) - 1)] +
@@ -901,6 +902,12 @@ getCyclopsProfileLogLikelihood <- function(object,
                                 (profile$value[1:(nrow(profile) - 1)] + (interceptX - profile$point[1:(nrow(profile) - 1)]) * slopes[2:(length(slopes) - 1)]))
 
             maxMaxError <- max(maxError, na.rm = TRUE)
+
+            # some checking/plotting code here to see what's going wrong
+            # plot(slopes[1:(length(slopes)-1)]~profile$point,type='l')
+            # plot(maxError~profile$point[1:(nrow(profile)-1)],pch=16)
+            # plot(profile$value ~ profile$point, type='l')
+
             if (is.na(maxMaxError) || maxMaxError > priorMaxMaxError) {
                 warning("Failing to converge when using adaptive profiling.")
                 return(NULL)
