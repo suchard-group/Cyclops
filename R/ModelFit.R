@@ -924,6 +924,151 @@ getCyclopsProfileLogLikelihood <- function(object,
     return(profile)
 }
 
+
+# attempt to fix previous function using a new algorithm
+#' @title Profile likelihood for Cyclops model parameters (updated version)
+#'
+#' @description
+#' \code{getCyclopsProfileLogLikelihoodNew} evaluates the profile likelihood at a grid of parameter values,
+#'                  or using adaptive profiling to select grid points for profiling.
+#'
+#' @param object    Fitted Cyclops model object
+#' @param parm      Specification of which parameter requires profiling,
+#'                  either a vector of numbers of covariateId names
+#' @param x         Vector of values of the parameter (for fixed grid profiling)
+#' @param bounds    Pair of values to bound adaptive profiling
+#' @param tolerance Absolute tolerance allowed for adaptive profiling
+#' @param initialGridSize Initial grid size for adaptive profiling
+#' @param maxGridSize  Maximum size of grid points for adaptive profiling
+#' @param includePenalty    Logical: Include regularized covariate penalty in profile
+
+#'
+#' @return
+#' A data frame containing the profile log likelihood. Returns NULL when the adaptive profiling fails
+#' to converge.
+#'
+#' @export
+getCyclopsProfileLogLikelihoodNew <- function(object,
+                                              parm,
+                                              x = NULL,
+                                              bounds = NULL,
+                                              tolerance = 1E-3,
+                                              initialGridSize = 10,
+                                              maxGridSize = 10000,
+                                              includePenalty = TRUE) {
+
+    if (!xor(is.null(x), is.null(bounds))) {
+        stop("Must provide either `x` or `bounds`, but not both.")
+    }
+
+    if (!is.null(bounds)) { # Adaptive profiling using recursive calls
+
+        if (length(bounds) != 2 || bounds[1] >= bounds[2]) {
+            stop("Must provide bounds[1] < bounds[2]")
+        }
+
+        # If an MLE was found, let's not throw that bit of important information away:
+        if (object$return_flag == "SUCCESS" &&
+            coef(object)[as.character(parm)] > bounds[1] &&
+            coef(object)[as.character(parm)] < bounds[2]) {
+            profile <- tibble(point = coef(object)[as.character(parm)],
+                              value = fixedGridProfileLogLikelihood(object, parm, coef(object)[as.character(parm)], includePenalty)$value)
+        } else {
+            profile <- tibble()
+        }
+
+        # Start with sparse grid:
+        grid <- seq(bounds[1], bounds[2], length.out = initialGridSize)
+
+        # Iterate until stopping criteria met
+        # (either error <= tol, or maxGridSize reached)
+        while (length(grid) != 0) {
+
+            ll <- fixedGridProfileLogLikelihood(object, parm, grid, includePenalty)
+
+            profile <- bind_rows(profile, ll) %>% arrange(.data$point)
+
+            if (any(is.nan(profile$value))) {
+                if (all(is.nan(profile$value))) {
+                    warning("Failing to compute likelihood at entire initial grid.")
+                    return(NULL)
+                }
+
+                start <- min(which(!is.nan(profile$value)))
+                end <- max(which(!is.nan(profile$value)))
+                if (start == end) {
+                    warning("Failing to compute likelihood at entire grid except one. Giving up")
+                    return(NULL)
+                }
+                profile <- profile[start:end, ]
+                if (any(is.nan(profile$value))) {
+                    warning("Failing to compute likelihood in non-extreme regions. Giving up.")
+                    return(NULL)
+                }
+                warning("Failing to compute likelihood at extremes. Truncating bounds.")
+            }
+
+            # stop if grid size is big enough
+            ng = nrow(profile)
+
+            if(ng > maxGridSize){
+                warning("Max grid size reached before convergence. Use results with caution!")
+                break
+            }
+
+            # Error evals: compute the skip-one slopes first
+            deltaX = profile$point[3:ng] - profile$point[1:(ng - 2)]
+            deltaY = profile$value[3:ng] - profile$value[1:(ng - 2)]
+            slopes <- deltaY / deltaX
+
+            # linear interpolations on [2:(n-1)]
+            interpY = profile$value[1:(ng-2)] +
+                (profile$point[2:(ng-1)] - profile$point[1:(ng - 2)]) * slopes
+
+            # compare linear interpolations with real values on [2:(n-1)]
+            errors = abs(profile$value[2:(ng-1)] - interpY)
+
+            # if error terms are all NAs: complain and return NULL
+            if(all(is.na(errors))){
+                warning("Approximation error evaluation failed. Failing to converge when using adaptive profiling.")
+                return(NULL)
+            }
+
+            # check out spots where error > tolerance
+            # for each such spot, add the left and right midpoints
+            exceed <- which(errors > tolerance) + 1
+            grid <- c((profile$point[exceed] + profile$point[exceed + 1]) / 2,
+                      (profile$point[exceed-1] + profile$point[exceed]) / 2)
+
+            # also check the starting the ending grid points
+            # compare linear extrapolation values with actual values
+            errorSt = abs(profile$value[1] -
+                              (profile$value[2] + (profile$point[1]-profile$point[2]) *
+                                   (profile$value[3]-profile$value[2])/(profile$point[3]-profile$point[2])))
+            if(errorSt > tolerance){
+                # if error big, add the midpoint on the right to starting point
+                grid = c(profile$point[1:2]/2,grid)
+            }
+
+            errorEnd = abs(profile$value[ng] -
+                               (profile$value[ng-1] + (profile$point[ng]-profile$point[ng-1]) *
+                                    (profile$value[ng-1]-profile$value[ng-2])/(profile$point[ng-1]-profile$point[ng-2])))
+
+            if(errorSt > tolerance){
+                # if error big, add the midpoint on the left to ending point
+                grid = c(grid, profile$point[(ng-1):ng]/2)
+            }
+
+            # take unique values of the new grid
+            grid = unique(grid)
+        }
+    } else { # Use x
+        profile <- fixedGridProfileLogLikelihood(object, parm, x, includePenalty)
+    }
+
+    return(profile)
+}
+
 fixedGridProfileLogLikelihood <- function(object, parm, x, includePenalty) {
 
     .checkInterface(object$cyclopsData, testOnly = TRUE)
